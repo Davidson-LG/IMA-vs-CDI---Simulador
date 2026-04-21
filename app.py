@@ -2,6 +2,14 @@
 IMA-B 5 vs CDI — Simulador de Retornos
 Aplicação principal Streamlit
 """
+import sys
+import os
+
+# Garante que o diretório raiz do app está no sys.path (necessário no Streamlit Cloud)
+_root = os.path.dirname(os.path.abspath(__file__))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
 import streamlit as st
 
 st.set_page_config(
