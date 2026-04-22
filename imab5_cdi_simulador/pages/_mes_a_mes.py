@@ -22,6 +22,7 @@ from utils.business_days import load_holidays, count_business_days, business_day
 from utils.vna import (
     load_vna_historico, project_vna_daily,
     build_ipca_monthly_map, get_vna_at_date,
+    calcular_retorno_cdi,
 )
 
 
@@ -57,8 +58,8 @@ def render():
 
     df_vna_full = _build_vna_full(df_vna_hist, data_inicio, data_fim, holidays)
 
-    # Constrói tabela CDI (número índice diário)
-    df_cdi = _build_cdi_index(data_inicio, data_fim, selic_reunioes, holidays)
+    # CDI calculado diretamente por período (metodologia correta)
+    df_cdi = None  # não mais usado — CDI calculado por período abaixo
 
     # Períodos mensais
     periodos = _build_monthly_periods(data_inicio, data_fim, holidays)
@@ -71,7 +72,7 @@ def render():
     idx_cdi  = 100.0
 
     for ini, fim in periodos:
-        du = count_business_days(ini, fim, holidays)
+        du = len(business_days_range(ini, fim, holidays))
 
         # VNA lookup (procv): pega o VNA exato do início e fim do mês
         vna_ini = _lookup_date(ini, df_vna_full)
@@ -80,14 +81,9 @@ def render():
         if not vna_ini or not vna_fim or vna_ini <= 0:
             continue
 
-        # CDI lookup (procv no número índice)
-        cdi_ini = _lookup_date(ini, df_cdi)
-        cdi_fim = _lookup_date(fim, df_cdi)
-
-        if not cdi_ini or not cdi_fim or cdi_ini <= 0:
-            ret_cdi = 0.0
-        else:
-            ret_cdi = cdi_fim / cdi_ini - 1.0
+        # CDI: calcula diretamente para o período (metodologia validada)
+        res_cdi = calcular_retorno_cdi(ini, fim, selic_reunioes, holidays)
+        ret_cdi = res_cdi["retorno_cdi"]
 
         # IPCA = variação do VNA
         var_vna = vna_fim / vna_ini - 1.0
