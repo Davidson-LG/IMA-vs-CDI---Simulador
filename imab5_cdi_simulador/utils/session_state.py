@@ -1,98 +1,95 @@
 """
-Gerenciamento de estado compartilhado entre páginas do Streamlit.
+Session state: inicialização e helpers para Streamlit.
 """
 import streamlit as st
-from datetime import date
 import pandas as pd
+from datetime import date, timedelta
+from dateutil.relativedelta import relativedelta
 
+
+# ── Inicialização ──────────────────────────────────────────────────────────────
 
 def init_session_state():
-    """Inicializa variáveis de estado padrão."""
+    hoje = date.today()
 
     defaults = {
-        # Parâmetros IMA-B 5
-        "taxa_real_aa": 7.75,
-        "duration_du": 496,
-
-        # Datas
-        "data_inicio": date.today(),
-        "data_fim": date(date.today().year + 1, date.today().month, date.today().day),
-
-        # Cenário ativo (base/otimista/alternativo)
-        "cenario_ativo_ipca": "base",
+        "data_inicio":       hoje,
+        "data_fim":          date(hoje.year, 12, 31),
+        "taxa_real_aa":      7.75,
+        "duration_du":       496,
         "cenario_ativo_selic": "base",
-
-        # IPCA - três cenários (lista de dicts {mes, valor})
-        "ipca_base": [],       # preenchido pelo Focus
-        "ipca_otimista": [],   # manual
-        "ipca_alternativo": [],  # manual
-
-        # Selic - três cenários (lista de dicts {reuniao, taxa})
-        "selic_base": [],      # preenchido pelo Focus
-        "selic_otimista": [],
+        "cenario_ativo_ipca":  "base",
+        "vna_historico":     pd.DataFrame(columns=["Data","VNA","Ref","Índice"]),
+        # Selic cenários
+        "selic_base":        [],
+        "selic_otimista":    [],
         "selic_alternativo": [],
-
-        # VNA carregado
-        "vna_uploaded_file": None,
-        "vna_historico": pd.DataFrame(columns=["Data", "VNA", "Ref"]),
-
-        # Abertura/fechamento cenários principais
-        "cenario1_variacao": -0.50,   # fechamento (negativo = redução da taxa)
-        "cenario2_variacao": 0.0,     # estabilidade
-        "cenario3_variacao": 0.50,    # abertura
-
-        # Carteira
-        "peso_cdi": 50.0,
-        "peso_imab5": 50.0,
-        "carteira_variacao": 0.0,
-
-        # Focus publicação
-        "focus_data_publicacao": "N/D",
+        # IPCA cenários — valores MENSAIS por ciclo 15-a-15
+        # Formato: [{mes: "MM/YYYY", ipca: float%}, ...]
+        "ipca_base":         [],
+        "ipca_otimista":     [],
+        "ipca_alternativo":  [],
     }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
-    for key, val in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = val
 
-
-def get_ipca_cenario(cenario: str) -> list:
-    """Retorna lista de IPCA para o cenário selecionado."""
-    mapping = {
-        "base": st.session_state.get("ipca_base", []),
-        "otimista": st.session_state.get("ipca_otimista", []),
-        "alternativo": st.session_state.get("ipca_alternativo", []),
-    }
-    data = mapping.get(cenario, [])
-    # fallback para base se cenário manual vazio
-    if not data:
-        data = st.session_state.get("ipca_base", [])
-    return data
-
+# ── Selic helpers ──────────────────────────────────────────────────────────────
 
 def get_selic_cenario(cenario: str) -> list:
-    """Retorna lista de Selic para o cenário selecionado."""
-    mapping = {
-        "base": st.session_state.get("selic_base", []),
-        "otimista": st.session_state.get("selic_otimista", []),
-        "alternativo": st.session_state.get("selic_alternativo", []),
-    }
-    data = mapping.get(cenario, [])
-    if not data:
-        data = st.session_state.get("selic_base", [])
-    return data
-
-
-def ipca_list_to_df(ipca_list: list) -> pd.DataFrame:
-    """Converte lista de IPCA para DataFrame {DataReferencia, Mediana}."""
-    if not ipca_list:
-        return pd.DataFrame(columns=["DataReferencia", "Mediana"])
-    return pd.DataFrame(ipca_list)
+    """Retorna lista de dicts {reuniao, data_reuniao, taxa_aa}."""
+    return st.session_state.get(f"selic_{cenario}", [])
 
 
 def selic_list_to_reunioes(selic_list: list) -> list:
-    """Converte lista de Selic para formato usado no cálculo CDI."""
+    """Converte lista de selic para formato aceito por calcular_retorno_cdi."""
     result = []
     for item in selic_list:
-        if "data_reuniao" in item and "taxa_aa" in item:
-            result.append(item)
-    return result
+        try:
+            dt = item.get("data_reuniao")
+            if isinstance(dt, str):
+                dt = pd.to_datetime(dt).date()
+            elif hasattr(dt, "date"):
+                dt = dt.date()
+            result.append({
+                "data_reuniao": dt,
+                "taxa_aa":      float(item.get("taxa_aa", 14.75)),
+            })
+        except Exception:
+            pass
+    return sorted(result, key=lambda x: x["data_reuniao"])
+
+
+# ── IPCA helpers ───────────────────────────────────────────────────────────────
+
+def get_ipca_cenario(cenario: str) -> list:
+    """Retorna lista de dicts {mes: 'MM/YYYY', ipca: float%}."""
+    return st.session_state.get(f"ipca_{cenario}", [])
+
+
+def ipca_list_to_df(ipca_list: list) -> pd.DataFrame:
+    """
+    Converte lista IPCA para DataFrame {DataReferencia: Timestamp, Mediana: float}.
+    IMPORTANTE: o campo 'ipca' aqui é o IPCA do CICLO 15-a-15,
+    indexado pelo mês do início do ciclo.
+    Ex: ipca de abr/2026 = 0.90% = IPCA do ciclo 15/abr→15/mai
+    """
+    rows = []
+    for item in ipca_list:
+        try:
+            mes_str = item.get("mes", "")
+            if "/" in mes_str:
+                m, y = int(mes_str.split("/")[0]), int(mes_str.split("/")[1])
+                dt = pd.Timestamp(date(y, m, 1))
+            else:
+                dt = pd.to_datetime(mes_str)
+            rows.append({
+                "DataReferencia": dt,
+                "Mediana":        float(item.get("ipca", 0.0)),
+            })
+        except Exception:
+            pass
+    return pd.DataFrame(rows) if rows else pd.DataFrame(
+        columns=["DataReferencia", "Mediana"]
+    )

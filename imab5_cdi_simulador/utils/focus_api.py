@@ -316,10 +316,23 @@ def get_focus_selic_copom() -> pd.DataFrame:
 
 
 def _parse_reuniao(r: str) -> date | None:
+    """
+    Fallback para reuniões não mapeadas em COPOM_DATES.
+    Usa a data correta (último dia da reunião = quarta-feira).
+    Mapeamento: reunião N → mês M do ano A, último dia (quarta).
+    """
+    # Mapeamento correto BCB: reunião → mês do último dia (quarta-feira)
+    # 2026: 28/jan(1), 18/mar(2), 29/abr(3), 17/jun(4), 05/ago(5), 16/set(6), 04/nov(7), 09/dez(8)
+    # Padrão: jan(1), mar(2), abr/mai(3), jun(4), ago(5), set(6), nov(7), dez(8)
+    MES_REUNIAO = {1:1, 2:3, 3:4, 4:6, 5:8, 6:9, 7:11, 8:12}
+    DIA_REUNIAO = {1:28, 2:18, 3:29, 4:17, 5:5, 6:16, 7:4, 8:9}
     try:
         n, a = int(r.split("/")[0]), int(r.split("/")[1])
-        m = {1:1,2:3,3:5,4:6,5:7,6:9,7:11,8:12}.get(n,6)
-        return date(a, m, 15)
+        m = MES_REUNIAO.get(n)
+        d = DIA_REUNIAO.get(n)
+        if m and d:
+            return date(a, m, d)
+        return None
     except Exception:
         return None
 

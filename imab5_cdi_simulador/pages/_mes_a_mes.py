@@ -157,40 +157,84 @@ def _build_vna_full(df_hist, data_inicio, data_fim, holidays):
     """
     Retorna DataFrame {Data: date, Value: float} com VNA para cada DU do período.
     Usa histórico ANBIMA onde disponível, projeta o restante.
+
+    IPCA do ciclo 15-a-15:
+    - Para ciclos com dados na coluna 'Índice' do arquivo ANBIMA → usa esse valor
+    - Para ciclos futuros → usa o cenário IPCA selecionado (base/otimista/alternativo)
     """
     result = {}
 
-    # Histórico
+    # Histórico ANBIMA
     if not df_hist.empty:
         for _, row in df_hist.iterrows():
             result[row["Data"]] = float(row["VNA"])
 
-    # Projeção para datas futuras
-    ipca_list = get_ipca_cenario(st.session_state.get("cenario_ativo_ipca", "base"))
-    ultima_hist = max(result.keys()) if result else data_inicio
-
-    if ipca_list and ultima_hist < data_fim:
-        ipca_df = ipca_list_to_df(ipca_list)
-        ipca_monthly = build_ipca_monthly_map(ipca_df, ultima_hist, data_fim)
-        vna_ponto = result.get(ultima_hist)
-        if not vna_ponto and result:
-            # pega o mais próximo anterior
-            dates_before = [d for d in result if d <= ultima_hist]
-            if dates_before:
-                vna_ponto = result[max(dates_before)]
-
-        if vna_ponto:
-            df_proj = project_vna_daily(ultima_hist, data_fim, vna_ponto, ipca_monthly, holidays)
-            if not df_proj.empty:
-                df_proj["Data"] = pd.to_datetime(df_proj["Data"]).dt.date
-                for _, row in df_proj.iterrows():
-                    if row["Data"] not in result:
-                        result[row["Data"]] = float(row["VNA"])
-
     if not result:
         return pd.DataFrame(columns=["Data", "Value"])
+
+    ultima_hist = max(result.keys())
+    if ultima_hist >= data_fim:
+        df = pd.DataFrame(list(result.items()), columns=["Data", "Value"])
+        return df.sort_values("Data").reset_index(drop=True)
+
+    # Monta mapa IPCA de ciclo: usa 'Índice' do VNA histórico para ciclos conhecidos
+    # e o cenário IPCA para ciclos futuros
+    ipca_cycle_map = _build_ipca_cycle_map(df_hist, data_fim)
+
+    # Ponto de partida: último VNA do histórico
+    vna_ponto = result[ultima_hist]
+
+    if ipca_cycle_map:
+        df_proj = project_vna_daily(ultima_hist, data_fim, vna_ponto, ipca_cycle_map, holidays)
+        if not df_proj.empty:
+            df_proj["Data"] = pd.to_datetime(df_proj["Data"]).dt.date
+            for _, row in df_proj.iterrows():
+                if row["Data"] not in result:
+                    result[row["Data"]] = float(row["VNA"])
+
     df = pd.DataFrame(list(result.items()), columns=["Data", "Value"])
     return df.sort_values("Data").reset_index(drop=True)
+
+
+def _build_ipca_cycle_map(df_hist: pd.DataFrame, data_fim) -> dict:
+    """
+    Monta mapa {(ano, mes): ipca_ciclo%} para projeção VNA 15-a-15.
+
+    Prioridade:
+    1. Coluna 'Índice' do arquivo ANBIMA histórico (ciclos já divulgados)
+    2. Cenário IPCA selecionado (ciclos futuros)
+    """
+    from datetime import date as _date
+    cycle_map = {}
+
+    # 1. Valores do arquivo ANBIMA (campo 'Índice' = IPCA do ciclo)
+    if "Índice" in df_hist.columns:
+        for _, row in df_hist.iterrows():
+            try:
+                d = row["Data"]
+                if isinstance(d, str):
+                    d = pd.to_datetime(d).date()
+                elif hasattr(d, "date"):
+                    d = d.date()
+                idx = row.get("Índice")
+                if pd.notna(idx) and float(idx) > 0:
+                    cycle_map[(d.year, d.month)] = float(idx)
+            except Exception:
+                pass
+
+    # 2. Cenário IPCA para datas não cobertas pelo histórico
+    ipca_list = get_ipca_cenario(st.session_state.get("cenario_ativo_ipca", "base"))
+    if ipca_list:
+        ipca_df = ipca_list_to_df(ipca_list)
+        for _, row in ipca_df.iterrows():
+            dt = row["DataReferencia"]
+            if isinstance(dt, pd.Timestamp):
+                dt = dt.date()
+            key = (dt.year, dt.month)
+            if key not in cycle_map:  # não sobrescreve o ANBIMA
+                cycle_map[key] = float(row["Mediana"])
+
+    return cycle_map
 
 
 def _build_cdi_index(data_inicio, data_fim, selic_reunioes, holidays):
