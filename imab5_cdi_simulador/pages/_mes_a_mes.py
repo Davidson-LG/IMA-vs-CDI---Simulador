@@ -189,8 +189,25 @@ def _build_vna_full(df_hist, data_inicio, data_fim, holidays):
     anchor_date = ultima_hist
     anchor_vna  = result[ultima_hist]
 
-    # Inclui todos os meses (necessário para ciclos 15-a-15 que cruzam a data de início)
+    # Inclui todos os meses
     ipca_map = build_ipca_monthly_map(ipca_df, date(2020,1,1), data_fim)
+
+    # Injeta IPCA do ciclo ativo a partir do campo 'Índice' do arquivo ANBIMA
+    if "Índice" in df_hist.columns:
+        for _, row in df_hist[df_hist["Data"] <= anchor_date].iterrows():
+            try:
+                idx_val = float(row["Índice"])
+                if idx_val > 0:
+                    d = row["Data"]
+                    ciclo_mes = (d.month - 1) if d.day < 15 else d.month
+                    ciclo_ano = d.year if ciclo_mes > 0 else d.year - 1
+                    if ciclo_mes == 0: ciclo_mes = 12
+                    key = (ciclo_ano, ciclo_mes)
+                    if key not in ipca_map or ipca_map[key] == 0.0:
+                        ipca_map[key] = idx_val
+            except Exception:
+                pass
+
     df_proj = project_vna_daily(anchor_date, data_fim, anchor_vna, ipca_map, holidays)
     if not df_proj.empty:
         df_proj["Data"] = pd.to_datetime(df_proj["Data"]).dt.date

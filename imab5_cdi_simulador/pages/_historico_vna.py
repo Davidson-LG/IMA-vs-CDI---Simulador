@@ -111,9 +111,32 @@ def render():
                 ultima_hist = df_vna["Data"].max()
                 if ultima_hist <= data_proj_ini:
                     anchor_date = ultima_hist
-            # Inclui todos os meses do ipca_df no mapa (não apenas a partir de anchor_date)
-            # Necessário para ciclos 15-a-15 que cruzam a data de início da projeção
+            # Inclui todos os meses do ipca_df no mapa
             ipca_monthly = build_ipca_monthly_map(ipca_df, date(2020,1,1), data_proj_fim)
+
+            # Injeta IPCA dos ciclos ativos a partir do campo 'Índice' do arquivo ANBIMA
+            # Necessário para projetar dias antes do dia 15 do mês atual
+            if "Índice" in df_vna.columns:
+                for _, row in df_vna[df_vna["Data"] <= anchor_date].iterrows():
+                    try:
+                        idx_val = float(row["Índice"])
+                        if idx_val > 0:
+                            d = row["Data"]
+                            # O Índice do dia d pertence ao ciclo que começa no 15 anterior
+                            # Para d entre 01-14 do mês: ciclo = mês anterior
+                            # Para d entre 15-31 do mês: ciclo = mês atual
+                            if d.day < 15:
+                                ciclo_mes = d.month - 1 if d.month > 1 else 12
+                                ciclo_ano = d.year if d.month > 1 else d.year - 1
+                            else:
+                                ciclo_mes = d.month
+                                ciclo_ano = d.year
+                            key = (ciclo_ano, ciclo_mes)
+                            if key not in ipca_monthly or ipca_monthly[key] == 0.0:
+                                ipca_monthly[key] = idx_val
+                    except Exception:
+                        pass
+
             vna_ponto = get_vna_at_date(anchor_date, df_vna)
             if vna_ponto:
                 with st.spinner("Projetando VNA..."):
