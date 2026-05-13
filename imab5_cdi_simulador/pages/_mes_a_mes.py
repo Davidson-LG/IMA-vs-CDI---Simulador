@@ -37,43 +37,62 @@ def _project_with_anbima_cycle(
     holidays: set,
 ) -> pd.DataFrame:
     """
-    Projeta VNA usando DataMes/VNAAtual do arquivo ANBIMA para interpolação precisa.
+    Projeta VNA usando metodologia ANBIMA (Índice do arquivo + step por DU).
     """
     from utils.business_days import business_days_range as _bdr
+    from utils.vna import _nearest_15th
     rows = []
 
-    cycle_end = None
-    vna_cycle_end = None
-
-    if ("DataMes" in df_hist.columns and "VNAAtual" in df_hist.columns):
-        last_row_df = df_hist[df_hist["Data"] == anchor_date]
-        if not last_row_df.empty:
+    # Obtém Índice do último registro
+    indice_pct = None
+    if "Índice" in df_hist.columns:
+        last_df = df_hist[df_hist["Data"] == anchor_date]
+        if not last_df.empty:
             try:
-                lr = last_row_df.iloc[0]
-                cycle_end     = pd.to_datetime(lr["DataMes"]).date()
-                vna_cycle_end = float(lr["VNAAtual"])
-                if cycle_end <= anchor_date or vna_cycle_end <= 0:
-                    cycle_end = None
+                indice_pct = float(last_df.iloc[0]["Índice"])
             except Exception:
-                cycle_end = None
+                pass
 
-    if cycle_end and vna_cycle_end:
-        dias_ciclo = _bdr(anchor_date, cycle_end, holidays)
-        du_total = len(dias_ciclo) - 1
-        if du_total > 0:
-            for i, d in enumerate(dias_ciclo[1:], 1):
-                ratio = i / du_total
-                rows.append({"Data": d, "VNA": round(vna_anchor * (vna_cycle_end/vna_anchor)**ratio, 6)})
-        if cycle_end < data_fim:
-            df_fut = project_vna_daily(cycle_end, data_fim, vna_cycle_end, ipca_monthly, holidays)
-            if not df_fut.empty:
-                df_fut["Data"] = pd.to_datetime(df_fut["Data"]).dt.date
-                rows.extend(df_fut[df_fut["Data"] > cycle_end].to_dict("records"))
-    else:
+    if not indice_pct or indice_pct <= 0:
         df_p = project_vna_daily(anchor_date, data_fim, vna_anchor, ipca_monthly, holidays)
         if not df_p.empty:
             df_p["Data"] = pd.to_datetime(df_p["Data"]).dt.date
             rows.extend(df_p.to_dict("records"))
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Data", "VNA"])
+
+    # Cycle end = próximo dia 15 ÚTIL estritamente após anchor_date
+    # (pode ser no mesmo mês se anchor < 15, ou no próximo mês se anchor >= 15)
+    d15_this = _nearest_15th(date(anchor_date.year, anchor_date.month, 15), 'prev', holidays)
+    cycle_end = d15_this if d15_this > anchor_date else _nearest_15th(anchor_date, 'next', holidays)
+
+    # cycle_start_15 = dia 15 anterior ao cycle_end (base do ciclo)
+    if cycle_end.month == 1:
+        cycle_start_15 = _nearest_15th(date(cycle_end.year-1, 12, 15), 'prev', holidays)
+    else:
+        cycle_start_15 = _nearest_15th(date(cycle_end.year, cycle_end.month-1, 15), 'prev', holidays)
+    # du_total = DU real do ciclo (count_bd excl ini, incl fim) — varia por ciclo
+    from utils.business_days import count_business_days as _cbd
+    du_total = _cbd(cycle_start_15, cycle_end, holidays)
+
+    dias_restantes = _bdr(anchor_date, cycle_end, holidays)[1:]
+    du_rem = len(dias_restantes)
+
+    if du_rem > 0 and du_total > 0:
+        # Fórmula ANBIMA: VNA(d) = VNA(ciclo_ini) × (1+Índice)^(count_bd(ciclo_ini,d)/20)
+        du_anchor = _cbd(cycle_start_15, anchor_date, holidays)
+        vna_ciclo_ini = vna_anchor / (1 + indice_pct/100)**(du_anchor/20)
+        vna_cycle_end = vna_ciclo_ini * (1 + indice_pct/100)
+        for d in dias_restantes:
+            du_d = _cbd(cycle_start_15, d, holidays)
+            rows.append({"Data": d, "VNA": round(vna_ciclo_ini * (1 + indice_pct/100)**(du_d/20), 6)})
+    else:
+        vna_cycle_end = vna_anchor
+
+    if cycle_end < data_fim:
+        df_fut = project_vna_daily(cycle_end, data_fim, vna_cycle_end, ipca_monthly, holidays)
+        if not df_fut.empty:
+            df_fut["Data"] = pd.to_datetime(df_fut["Data"]).dt.date
+            rows.extend(df_fut[df_fut["Data"] > cycle_end].to_dict("records"))
 
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Data", "VNA"])
 

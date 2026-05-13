@@ -33,62 +33,82 @@ def _project_with_anbima_cycle(
     holidays: set,
 ) -> pd.DataFrame:
     """
-    Projeta VNA a partir de anchor_date usando:
-    1. Para dias restantes do ciclo atual (até DataMes):
-       interpolação proporcional entre VNA(anchor) e VNAAtual usando DU
-       VNA(d) = VNA_anchor × (VNAAtual/VNA_anchor)^(DU_anchor→d / DU_anchor→DataMes)
-    2. Para ciclos futuros: project_vna_daily com ipca_monthly
+    Projeta VNA a partir de anchor_date usando metodologia ANBIMA.
+
+    Para dias restantes do ciclo atual (anchor_date → próximo dia 15):
+      - Calcula cycle_end = próximo dia 15 útil após anchor_date
+      - du_total = inner DU do ciclo (excl ambas as pontas)
+      - VNA(cycle_end) = VNA(anchor) × (1+Índice/100)^(du_rem/du_total)
+      - Projeta cada dia intermediário com step uniforme
+
+    Para ciclos futuros: project_vna_daily com ipca_monthly.
     """
     from utils.business_days import business_days_range as _bdr
+    from utils.vna import _nearest_15th
     rows = []
 
-    # Verifica se o arquivo ANBIMA tem DataMes e VNAAtual
-    has_cycle_info = (
-        "DataMes" in df_vna.columns and
-        "VNAAtual" in df_vna.columns and
-        not df_vna[df_vna["Data"] == anchor_date].empty
-    )
+    # Obtém Índice do último registro (coluna 'Índice' do arquivo ANBIMA)
+    indice_pct = None
+    if "Índice" in df_vna.columns:
+        last_row_df = df_vna[df_vna["Data"] == anchor_date]
+        if not last_row_df.empty:
+            try:
+                indice_pct = float(last_row_df.iloc[0]["Índice"])
+            except Exception:
+                pass
 
-    cycle_end = None
-    vna_cycle_end = None
-
-    if has_cycle_info:
-        last_row = df_vna[df_vna["Data"] == anchor_date].iloc[0]
-        try:
-            cycle_end    = pd.to_datetime(last_row["DataMes"]).date()
-            vna_cycle_end = float(last_row["VNAAtual"])
-            if cycle_end <= anchor_date or vna_cycle_end <= 0:
-                cycle_end = None
-        except Exception:
-            cycle_end = None
-
-    if cycle_end and vna_cycle_end:
-        # Interpola dias restantes do ciclo atual
-        dias_ciclo = _bdr(anchor_date, cycle_end, holidays)
-        du_total = len(dias_ciclo) - 1  # excl anchor, incl cycle_end
-        if du_total > 0:
-            for i, d in enumerate(dias_ciclo[1:], 1):  # skip anchor_date
-                ratio = i / du_total
-                vna_d = vna_anchor * (vna_cycle_end / vna_anchor) ** ratio
-                rows.append({"Data": d, "VNA": round(vna_d, 6)})
-
-        # Projeta ciclos futuros a partir de cycle_end
-        if cycle_end < data_fim:
-            vna_at_end = vna_cycle_end
-            df_fut = project_vna_daily(
-                cycle_end, data_fim, vna_at_end, ipca_monthly, holidays
-            )
-            if not df_fut.empty:
-                df_fut["Data"] = pd.to_datetime(df_fut["Data"]).dt.date
-                # Evita duplicar cycle_end
-                df_fut = df_fut[df_fut["Data"] > cycle_end]
-                rows.extend(df_fut.to_dict("records"))
-    else:
-        # Sem DataMes/VNAAtual: usa project_vna_daily diretamente
+    if not indice_pct or indice_pct <= 0:
+        # Sem Índice válido: usa project_vna_daily diretamente
         df_p = project_vna_daily(anchor_date, data_fim, vna_anchor, ipca_monthly, holidays)
         if not df_p.empty:
             df_p["Data"] = pd.to_datetime(df_p["Data"]).dt.date
             rows.extend(df_p.to_dict("records"))
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Data", "VNA"])
+
+    # Cycle end = próximo dia 15 ÚTIL estritamente após anchor_date
+    # (pode ser no mesmo mês se anchor < 15, ou no próximo mês se anchor >= 15)
+    d15_this = _nearest_15th(date(anchor_date.year, anchor_date.month, 15), 'prev', holidays)
+    cycle_end = d15_this if d15_this > anchor_date else _nearest_15th(anchor_date, 'next', holidays)
+
+    # cycle_start_15 = dia 15 anterior ao cycle_end (base do ciclo)
+    if cycle_end.month == 1:
+        cycle_start_15 = _nearest_15th(date(cycle_end.year-1, 12, 15), 'prev', holidays)
+    else:
+        cycle_start_15 = _nearest_15th(date(cycle_end.year, cycle_end.month-1, 15), 'prev', holidays)
+    # du_total = DU real do ciclo (count_bd excl ini, incl fim) — varia por ciclo
+    from utils.business_days import count_business_days as _cbd
+    du_total = _cbd(cycle_start_15, cycle_end, holidays)
+
+    # Dias restantes de anchor_date até cycle_end (excl anchor, incl cycle_end)
+    dias_restantes = _bdr(anchor_date, cycle_end, holidays)[1:]
+    du_rem = len(dias_restantes)
+
+    if du_rem > 0 and du_total > 0:
+        # Fórmula ANBIMA exata:
+        # VNA(d) = VNA(ciclo_ini_15) × (1+Índice)^(count_bd(ciclo_ini_15, d) / 20)
+        # onde count_bd exclui ciclo_ini e inclui d
+        # Reconstituímos VNA(ciclo_ini_15) a partir de VNA(anchor):
+        # VNA(anchor) = VNA(ciclo_ini) × (1+Índice)^(du_anchor/20)
+        # du_anchor = count_bd(ciclo_ini, anchor)
+        du_anchor = _cbd(cycle_start_15, anchor_date, holidays)
+        vna_ciclo_ini = vna_anchor / (1 + indice_pct/100)**(du_anchor/20)
+        # Projeta cada dia restante
+        vna_cycle_end = vna_ciclo_ini * (1 + indice_pct/100)**(20/20)
+        for d in dias_restantes:
+            du_d = _cbd(cycle_start_15, d, holidays)
+            vna_d = vna_ciclo_ini * (1 + indice_pct/100)**(du_d/20)
+            rows.append({"Data": d, "VNA": round(vna_d, 6)})
+    else:
+        vna_cycle_end = vna_anchor
+
+    # Ciclos futuros via project_vna_daily
+    if cycle_end < data_fim:
+        df_fut = project_vna_daily(
+            cycle_end, data_fim, vna_cycle_end, ipca_monthly, holidays
+        )
+        if not df_fut.empty:
+            df_fut["Data"] = pd.to_datetime(df_fut["Data"]).dt.date
+            rows.extend(df_fut[df_fut["Data"] > cycle_end].to_dict("records"))
 
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Data", "VNA"])
 
