@@ -184,15 +184,10 @@ def _build_vna_full(df_hist, data_inicio, data_fim, holidays):
     # Ancoragem: usa o dia 15 mais recente disponível no histórico como ponto de partida
     # Isso evita erro de back-cálculo quando o ANBIMA usa Índice diferente do cenário
     from datetime import timedelta as _td
+    # Ancoragem: sempre usa o último dia disponível no histórico
+    # (evita recuar para mês anterior quando o dia 15 do mês atual não existe)
     anchor_date = ultima_hist
     anchor_vna  = result[ultima_hist]
-    # Procura o dia 15 do mês de ultima_hist (ou anterior) no histórico
-    for d_try in [ultima_hist.replace(day=15),
-                  (ultima_hist.replace(day=1) - _td(days=1)).replace(day=15)]:
-        if d_try in result and d_try <= ultima_hist:
-            anchor_date = d_try
-            anchor_vna  = result[d_try]
-            break
 
     ipca_map = build_ipca_monthly_map(ipca_df, anchor_date, data_fim)
     df_proj = project_vna_daily(anchor_date, data_fim, anchor_vna, ipca_map, holidays)

@@ -104,15 +104,13 @@ def render():
             st.warning("⚠️ Carregue IPCA na aba Parâmetros.")
         else:
             ipca_df = ipca_list_to_df(ipca_list)
-            # Ancoragem: usa o dia 15 mais recente para evitar erro de back-cálculo
-            from datetime import timedelta as _td
+            # Ancoragem: usa o último dia disponível no histórico
+            # (evita recuar para mês anterior quando o dia 15 do mês atual não existe)
             anchor_date = data_proj_ini
-            for d_try in [data_proj_ini.replace(day=15),
-                          (data_proj_ini.replace(day=1) - _td(days=1)).replace(day=15)]:
-                sub = df_vna[df_vna["Data"] == d_try]
-                if not sub.empty and d_try <= data_proj_ini:
-                    anchor_date = d_try
-                    break
+            if not df_vna.empty:
+                ultima_hist = df_vna["Data"].max()
+                if ultima_hist <= data_proj_ini:
+                    anchor_date = ultima_hist
             ipca_monthly = build_ipca_monthly_map(ipca_df, anchor_date, data_proj_fim)
             vna_ponto = get_vna_at_date(anchor_date, df_vna)
             if vna_ponto:
