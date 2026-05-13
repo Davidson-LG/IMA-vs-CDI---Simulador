@@ -22,6 +22,76 @@ from utils.vna import (
 )
 
 
+
+
+def _project_with_anbima_cycle(
+    df_vna: pd.DataFrame,
+    anchor_date,
+    vna_anchor: float,
+    ipca_monthly: dict,
+    data_fim,
+    holidays: set,
+) -> pd.DataFrame:
+    """
+    Projeta VNA a partir de anchor_date usando:
+    1. Para dias restantes do ciclo atual (até DataMes):
+       interpolação proporcional entre VNA(anchor) e VNAAtual usando DU
+       VNA(d) = VNA_anchor × (VNAAtual/VNA_anchor)^(DU_anchor→d / DU_anchor→DataMes)
+    2. Para ciclos futuros: project_vna_daily com ipca_monthly
+    """
+    from utils.business_days import business_days_range as _bdr
+    rows = []
+
+    # Verifica se o arquivo ANBIMA tem DataMes e VNAAtual
+    has_cycle_info = (
+        "DataMes" in df_vna.columns and
+        "VNAAtual" in df_vna.columns and
+        not df_vna[df_vna["Data"] == anchor_date].empty
+    )
+
+    cycle_end = None
+    vna_cycle_end = None
+
+    if has_cycle_info:
+        last_row = df_vna[df_vna["Data"] == anchor_date].iloc[0]
+        try:
+            cycle_end    = pd.to_datetime(last_row["DataMes"]).date()
+            vna_cycle_end = float(last_row["VNAAtual"])
+            if cycle_end <= anchor_date or vna_cycle_end <= 0:
+                cycle_end = None
+        except Exception:
+            cycle_end = None
+
+    if cycle_end and vna_cycle_end:
+        # Interpola dias restantes do ciclo atual
+        dias_ciclo = _bdr(anchor_date, cycle_end, holidays)
+        du_total = len(dias_ciclo) - 1  # excl anchor, incl cycle_end
+        if du_total > 0:
+            for i, d in enumerate(dias_ciclo[1:], 1):  # skip anchor_date
+                ratio = i / du_total
+                vna_d = vna_anchor * (vna_cycle_end / vna_anchor) ** ratio
+                rows.append({"Data": d, "VNA": round(vna_d, 6)})
+
+        # Projeta ciclos futuros a partir de cycle_end
+        if cycle_end < data_fim:
+            vna_at_end = vna_cycle_end
+            df_fut = project_vna_daily(
+                cycle_end, data_fim, vna_at_end, ipca_monthly, holidays
+            )
+            if not df_fut.empty:
+                df_fut["Data"] = pd.to_datetime(df_fut["Data"]).dt.date
+                # Evita duplicar cycle_end
+                df_fut = df_fut[df_fut["Data"] > cycle_end]
+                rows.extend(df_fut.to_dict("records"))
+    else:
+        # Sem DataMes/VNAAtual: usa project_vna_daily diretamente
+        df_p = project_vna_daily(anchor_date, data_fim, vna_anchor, ipca_monthly, holidays)
+        if not df_p.empty:
+            df_p["Data"] = pd.to_datetime(df_p["Data"]).dt.date
+            rows.extend(df_p.to_dict("records"))
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Data", "VNA"])
+
 def render():
     init_session_state()
     holidays = load_holidays()
@@ -140,8 +210,9 @@ def render():
             vna_ponto = get_vna_at_date(anchor_date, df_vna)
             if vna_ponto:
                 with st.spinner("Projetando VNA..."):
-                    df_vna_proj = project_vna_daily(
-                        anchor_date, data_proj_fim, vna_ponto, ipca_monthly, holidays
+                    df_vna_proj = _project_with_anbima_cycle(
+                        df_vna, anchor_date, vna_ponto,
+                        ipca_monthly, data_proj_fim, holidays
                     )
                 if not df_vna_proj.empty:
                     df_vna_proj["Data"] = pd.to_datetime(df_vna_proj["Data"]).dt.date

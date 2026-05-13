@@ -26,6 +26,57 @@ from utils.vna import (
 )
 
 
+
+
+def _project_with_anbima_cycle(
+    df_hist: pd.DataFrame,
+    anchor_date,
+    vna_anchor: float,
+    ipca_monthly: dict,
+    data_fim,
+    holidays: set,
+) -> pd.DataFrame:
+    """
+    Projeta VNA usando DataMes/VNAAtual do arquivo ANBIMA para interpolação precisa.
+    """
+    from utils.business_days import business_days_range as _bdr
+    rows = []
+
+    cycle_end = None
+    vna_cycle_end = None
+
+    if ("DataMes" in df_hist.columns and "VNAAtual" in df_hist.columns):
+        last_row_df = df_hist[df_hist["Data"] == anchor_date]
+        if not last_row_df.empty:
+            try:
+                lr = last_row_df.iloc[0]
+                cycle_end     = pd.to_datetime(lr["DataMes"]).date()
+                vna_cycle_end = float(lr["VNAAtual"])
+                if cycle_end <= anchor_date or vna_cycle_end <= 0:
+                    cycle_end = None
+            except Exception:
+                cycle_end = None
+
+    if cycle_end and vna_cycle_end:
+        dias_ciclo = _bdr(anchor_date, cycle_end, holidays)
+        du_total = len(dias_ciclo) - 1
+        if du_total > 0:
+            for i, d in enumerate(dias_ciclo[1:], 1):
+                ratio = i / du_total
+                rows.append({"Data": d, "VNA": round(vna_anchor * (vna_cycle_end/vna_anchor)**ratio, 6)})
+        if cycle_end < data_fim:
+            df_fut = project_vna_daily(cycle_end, data_fim, vna_cycle_end, ipca_monthly, holidays)
+            if not df_fut.empty:
+                df_fut["Data"] = pd.to_datetime(df_fut["Data"]).dt.date
+                rows.extend(df_fut[df_fut["Data"] > cycle_end].to_dict("records"))
+    else:
+        df_p = project_vna_daily(anchor_date, data_fim, vna_anchor, ipca_monthly, holidays)
+        if not df_p.empty:
+            df_p["Data"] = pd.to_datetime(df_p["Data"]).dt.date
+            rows.extend(df_p.to_dict("records"))
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Data", "VNA"])
+
 def render():
     init_session_state()
     holidays = load_holidays()
@@ -208,7 +259,9 @@ def _build_vna_full(df_hist, data_inicio, data_fim, holidays):
             except Exception:
                 pass
 
-    df_proj = project_vna_daily(anchor_date, data_fim, anchor_vna, ipca_map, holidays)
+    df_proj = _project_with_anbima_cycle(
+        df_hist, anchor_date, anchor_vna, ipca_map, data_fim, holidays
+    )
     if not df_proj.empty:
         df_proj["Data"] = pd.to_datetime(df_proj["Data"]).dt.date
         for _, row in df_proj.iterrows():
