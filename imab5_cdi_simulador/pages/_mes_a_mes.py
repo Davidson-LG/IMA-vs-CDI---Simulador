@@ -189,7 +189,8 @@ def _build_vna_full(df_hist, data_inicio, data_fim, holidays):
     anchor_date = ultima_hist
     anchor_vna  = result[ultima_hist]
 
-    ipca_map = build_ipca_monthly_map(ipca_df, anchor_date, data_fim)
+    # Inclui todos os meses (necessário para ciclos 15-a-15 que cruzam a data de início)
+    ipca_map = build_ipca_monthly_map(ipca_df, date(2020,1,1), data_fim)
     df_proj = project_vna_daily(anchor_date, data_fim, anchor_vna, ipca_map, holidays)
     if not df_proj.empty:
         df_proj["Data"] = pd.to_datetime(df_proj["Data"]).dt.date

@@ -111,7 +111,9 @@ def render():
                 ultima_hist = df_vna["Data"].max()
                 if ultima_hist <= data_proj_ini:
                     anchor_date = ultima_hist
-            ipca_monthly = build_ipca_monthly_map(ipca_df, anchor_date, data_proj_fim)
+            # Inclui todos os meses do ipca_df no mapa (não apenas a partir de anchor_date)
+            # Necessário para ciclos 15-a-15 que cruzam a data de início da projeção
+            ipca_monthly = build_ipca_monthly_map(ipca_df, date(2020,1,1), data_proj_fim)
             vna_ponto = get_vna_at_date(anchor_date, df_vna)
             if vna_ponto:
                 with st.spinner("Projetando VNA..."):
